@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Email Verifier</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+  <div class="bg-white shadow-lg rounded-2xl p-8 w-full max-w-4xl">
+    <h1 class="text-2xl font-bold mb-6 text-center">Email Syntax + MX + SMTP Verifier</h1>
+
+    <textarea id="emails" placeholder="Paste emails here, one per line..."
+      class="w-full h-40 border rounded-lg p-3 mb-4"></textarea>
+
+    <div class="flex space-x-2">
+      <button onclick="verifyEmails()" 
+        class="flex-1 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700">
+        Verify Emails
+      </button>
+      <button onclick="downloadCSV()" id="downloadBtn" disabled
+        class="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 disabled:opacity-50">
+        Download CSV
+      </button>
+    </div>
+
+    <div id="results" class="mt-6"></div>
+    <div id="duplicates" class="mt-6"></div>
+  </div>
+
+<script>
+let latestResults = [];
+let latestDuplicates = [];
+
+function debounceEmails(inputText) {
+  const rawEmails = inputText.split(/\r?\n/).map(e => e.trim()).filter(Boolean);
+  const seen = new Set(), unique = [], dupes = [];
+  for (const e of rawEmails) {
+    const lower = e.toLowerCase();
+    if (seen.has(lower)) dupes.push(e);
+    else { seen.add(lower); unique.push(e); }
+  }
+  return { uniqueEmails: unique, duplicates: dupes };
+}
+
+async function verifyEmails() {
+  const input = document.getElementById("emails").value;
+  const { uniqueEmails: emails, duplicates } = debounceEmails(input);
+  latestResults = []; latestDuplicates = duplicates;
+
+  if (emails.length === 0) { alert("Please enter some emails first."); return; }
+
+  const resultsDiv = document.getElementById("results");
+  const duplicatesDiv = document.getElementById("duplicates");
+  resultsDiv.innerHTML = `<p class="mb-2">Checking ${emails.length} unique emails...</p>`;
+  duplicatesDiv.innerHTML = "";
+
+  const table = document.createElement("table");
+  table.className = "w-full border text-sm text-left";
+  table.innerHTML = `
+    <thead>
+      <tr class="bg-gray-200">
+        <th class="p-2 border">Email</th>
+        <th class="p-2 border">Status</th>
+        <th class="p-2 border">Reason</th>
+      </tr>
+    </thead>
+    <tbody></tbody>`;
+  resultsDiv.appendChild(table);
+
+  const tbody = table.querySelector("tbody");
+
+  const syntaxFiltered = emails.map(email => {
+    const syntaxOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    return { email, syntaxOk };
+  });
+
+  const validEmails = syntaxFiltered.filter(e => e.syntaxOk).map(e => e.email);
+  syntaxFiltered.filter(e => !e.syntaxOk).forEach(e => addRow(e.email, "invalid", "bad syntax"));
+
+  try {
+    const resp = await fetch("https://YOUR_BACKEND_URL/verify-smtp-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emails: validEmails })
+    });
+    const results = await resp.json();
+    results.forEach(r => addRow(r.email, r.status, r.reason));
+  } catch (e) {
+    validEmails.forEach(email => addRow(email, "unknown", "backend error"));
+  }
+
+  if (duplicates.length > 0) {
+    duplicatesDiv.innerHTML = `
+      <h2 class="text-lg font-semibold mb-2 text-yellow-700">Skipped Duplicates (${duplicates.length})</h2>
+      <div class="bg-yellow-50 border border-yellow-300 rounded p-3 text-sm max-h-40 overflow-y-auto">
+        ${duplicates.map(e => `<div>${e}</div>`).join("")}
+      </div>`;
+  }
+
+  document.getElementById("downloadBtn").disabled = false;
+
+  function addRow(email, status, reason) {
+    latestResults.push({ email, status, reason });
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td class="p-2 border">${email}</td>
+      <td class="p-2 border ${status === "valid" ? "text-green-600" : status === "invalid" ? "text-red-600" : "text-yellow-600"}">${status}</td>
+      <td class="p-2 border">${reason}</td>`;
+    tbody.appendChild(row);
+  }
+}
+
+function downloadCSV() {
+  if (latestResults.length === 0) return;
+  let csv = "Email,Status,Reason\n";
+  latestResults.forEach(r => csv += `"${r.email}","${r.status}","${r.reason}"\n`);
+  if (latestDuplicates.length > 0) {
+    csv += "\nSkipped Duplicates\n";
+    latestDuplicates.forEach(d => { csv += `"${d}"\n`; });
+  }
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "email_verification_results.csv";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
